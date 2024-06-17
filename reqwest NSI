@@ -1,0 +1,87 @@
+ public static void RequestApiNsi(usaliContext db, int id, User user)
+ {
+
+     var firms = db.Firms.Where(d => d.BusinessId == id).ToList();
+
+     foreach (var firm in firms)
+     {
+         var url = $"https://nsi.company/api/FirmFinances";
+         var body = new { 
+             INN = firm.INN,
+             Years = "All"
+         };
+         var response = new Http().Send(url, Json.Encode(body));
+         var responseObj = JsonConvert.DeserializeObject<Root>(response);
+         var dictionaryList = new List<Dictionary<string, int?>>();
+         var factScenarios = db.Scenarios.Where(d => d.Type == "fact").FirstOrDefault();
+
+         foreach (var YearData in responseObj.yearData)
+         {
+             var dictionary = new Dictionary<string, int?>();
+             var filts = YearData.GetType().GetProperties();
+
+             foreach (var fil in filts)
+             {
+                 var ValueGet = fil.GetValue(YearData);
+                 dictionary.Add(fil.Name, ValueGet != null ? (int?)ValueGet : null);
+
+             }
+
+             dictionaryList.Add(dictionary);
+         };
+         foreach (var yearDataItem in dictionaryList)
+         {
+             var dateInYear = yearDataItem["year"].Value;
+             DateTime dateBalans = new DateTime(dateInYear, 12, 1);//Получаем дату отчетного года
+
+             foreach (var Item in yearDataItem)
+             {
+
+                 var LineNumber = Item.Key.Replace("line_", "");
+                 var LineCode = db.BusinessAccounts.FirstOrDefault(d => d.BusinessId == id && d.LineCode == LineNumber);
+
+                 if (LineCode != null)
+                 {
+                     var move = Movement.Make(db, new OperationRaw
+                     {
+                         Account = LineCode,
+                         Firm = firm,
+                         Date = dateBalans,
+                         OperationType = "MovementType.Excel",
+                         Scenario = factScenarios,
+                         User = user,
+                         Value = Item.Value,
+                         Note = "Loading balance"
+                     });
+
+                     var FirmDataDb = db.FirmData.Where(d => d.AccountId == LineCode.BusinessAccountId
+                     && d.Date == dateBalans && d.FirmId == firm.FirmId
+                     && d.ScenarioId == factScenarios.ScenarioId).FirstOrDefault();
+
+                     if (FirmDataDb == null)
+                     {
+                         FirmDataDb = new FirmData
+                         {
+                             AccountId = LineCode.BusinessAccountId,
+                             Date = dateBalans,
+                             FirmId = firm.FirmId,
+                             ScenarioId = factScenarios.ScenarioId,
+                             Value = Item.Value,
+                             Note = "Loading balance",
+                             MovementId = move?.MovementId
+                         };
+                         db.FirmData.Add(FirmDataDb);
+                         db.SaveChanges();
+                     }
+                     else
+                     {
+                         FirmDataDb.Value = Item.Value;
+                         FirmDataDb.MovementId = move?.MovementId;
+                         db.Update(FirmDataDb);
+                         db.SaveChanges();
+                     }
+                 }
+             }
+         }
+     }
+ }
